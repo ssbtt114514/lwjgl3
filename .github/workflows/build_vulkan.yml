@@ -1,10 +1,6 @@
-name: Build LWJGL 3.3.3 Modules (shaderc, vma, vulkan)
+name: Build LWJGL 3.3.3 Specific Modules (shaderc, vma, vulkan)
 
-on:
-  push:
-    branches: [ main, master, wip/rebase_3.3.3 ]
-  pull_request:
-    branches: [ main, master ]
+on: 
   workflow_dispatch:
     inputs:
       target_arch:
@@ -15,114 +11,164 @@ on:
         options:
           - arm64
           - arm32
-          - x64
           - x86
-
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+          - x64
+  push:
+    branches: [ wip/rebase_3.3.3, main, master ]
 
 jobs:
-  build-modules:
+  build:
+    strategy:
+      matrix:
+        arch: 
+          - ${{ github.event.inputs.target_arch || 'arm64' }}
+      fail-fast: false
+
     runs-on: ubuntu-22.04
-    
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-      with:
-        submodules: recursive
-        fetch-depth: 0
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
-    - name: Set up JDK 8
-      uses: actions/setup-java@v4
-      with:
-        java-version: '8'
-        distribution: 'temurin'
+      - name: Set up JDK 8
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 8
 
-    - name: Install dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y ant cmake ninja-build build-essential
+      - name: Setup Android NDK
+        id: setup-ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r25c
+          link-to-sdk: true
 
-    - name: Setup Android NDK
-      id: setup-ndk
-      uses: nttld/setup-ndk@v1
-      with:
-        ndk-version: r25c
-        link-to-sdk: true
+      - name: Build for Android ${{ matrix.arch }}
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+          JAVA8_HOME: ${{ env.JAVA_HOME }}
+          LWJGL_BUILD_ARCH: ${{ matrix.arch }}
+        run: |
+          echo "=========================================="
+          echo "Building LWJGL 3.3.3 for Android"
+          echo "Architecture: $LWJGL_BUILD_ARCH"
+          echo "JAVA8_HOME: $JAVA8_HOME"
+          echo "ANDROID_NDK_HOME: $ANDROID_NDK_HOME"
+          echo "=========================================="
+          
+          java -version
+          
+          chmod +x ci_build_android.bash
+          bash ci_build_android.bash 2>&1 | tee build.log
 
-    - name: Verify NDK installation
-      run: |
-        echo "NDK Path: ${{ steps.setup-ndk.outputs.ndk-path }}"
-        ls -la ${{ steps.setup-ndk.outputs.ndk-path }} || echo "NDK not found at expected path"
-        echo "ANDROID_NDK_HOME=$ANDROID_NDK_HOME"
+      - name: Extract specific modules (shaderc, vma, vulkan)
+        run: |
+          mkdir -p output/modules output/natives
+          
+          echo "=== Checking bin/RELEASE contents ==="
+          ls -la bin/RELEASE/ 2>/dev/null || echo "bin/RELEASE not found"
+          
+          echo ""
+          echo "=== Searching for target modules ==="
+          
+          # 查找 shaderc
+          echo "Looking for shaderc..."
+          find bin/RELEASE -name "*shaderc*" -type f 2>/dev/null | while read f; do
+            echo "Found: $f"
+            cp "$f" output/modules/
+          done
+          
+          # 查找 vma
+          echo "Looking for vma..."
+          find bin/RELEASE -name "*vma*" -type f 2>/dev/null | while read f; do
+            echo "Found: $f"
+            cp "$f" output/modules/
+          done
+          
+          # 查找 vulkan
+          echo "Looking for vulkan..."
+          find bin/RELEASE -name "*vulkan*" -type f 2>/dev/null | while read f; do
+            echo "Found: $f"
+            cp "$f" output/modules/
+          done
+          
+          echo ""
+          echo "=== Checking bin/out for native libraries ==="
+          ls -la bin/out/ 2>/dev/null || echo "bin/out not found"
+          
+          # 复制原生库
+          if [ -d "bin/out" ]; then
+            find bin/out -name "*shaderc*" -exec cp {} output/natives/ \; 2>/dev/null || true
+            find bin/out -name "*vma*" -exec cp {} output/natives/ \; 2>/dev/null || true
+            find bin/out -name "*vulkan*" -exec cp {} output/natives/ \; 2>/dev/null || true
+          fi
+          
+          echo ""
+          echo "=== Final output contents ==="
+          echo "Modules:"
+          ls -la output/modules/ || echo "No modules found"
+          echo ""
+          echo "Natives:"
+          ls -la output/natives/ || echo "No natives found"
 
-    - name: Build LWJGL 3.3.3 Android
-      env:
-        ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
-        LWJGL_BUILD_ARCH: ${{ github.event.inputs.target_arch || 'arm64' }}
-        JAVA8_HOME: ${{ env.JAVA_HOME }}
-      run: |
-        echo "========================================"
-        echo "Building LWJGL 3.3.3 for architecture: $LWJGL_BUILD_ARCH"
-        echo "JAVA8_HOME: $JAVA8_HOME"
-        echo "ANDROID_NDK_HOME: $ANDROID_NDK_HOME"
-        java -version
-        echo "========================================"
-        
-        # 确保脚本可执行
-        chmod +x ci_build_android.bash
-        
-        # 执行编译
-        bash ci_build_android.bash 2>&1 | tee build.log
-        
-        echo "========================================"
-        echo "Build completed, checking output..."
-        ls -la bin/ 2>/dev/null || echo "bin/ directory not found"
-        ls -la bin/RELEASE/ 2>/dev/null || echo "bin/RELEASE/ directory not found"
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-${{ matrix.arch }}
+          path: build.log
+          retention-days: 7
 
-    - name: Collect specific modules
-      if: always()
-      run: |
-        mkdir -p output/modules output/natives
-        ARCH=${{ github.event.inputs.target_arch || 'arm64' }}
-        
-        # 查找并复制目标模块（如果存在）
-        if [ -d "bin/RELEASE" ]; then
-          find bin/RELEASE -name "lwjgl-shaderc*.jar" -exec cp {} output/modules/ \; 2>/dev/null || true
-          find bin/RELEASE -name "lwjgl-vma*.jar" -exec cp {} output/modules/ \; 2>/dev/null || true
-          find bin/RELEASE -name "lwjgl-vulkan*.jar" -exec cp {} output/modules/ \; 2>/dev/null || true
-          find bin/RELEASE -name "lwjgl*.jar" -exec cp {} output/modules/ \; 2>/dev/null || true
-        fi
-        
-        # 复制原生库（如果存在）
-        if [ -d "bin/out" ]; then
-          find bin/out -type f -exec cp {} output/natives/ \; 2>/dev/null || true
-        fi
-        
-        echo "=== 收集到的文件 ==="
-        ls -la output/modules/ 2>/dev/null || echo "没有模块文件"
-        ls -la output/natives/ 2>/dev/null || echo "没有原生库文件"
-        
-        # 打包整个 bin 目录用于调试
-        tar -czf output/bin-debug.tar.gz bin/ 2>/dev/null || true
+      - name: Upload specific modules
+        uses: actions/upload-artifact@v4
+        with:
+          name: lwjgl3-specific-modules-${{ matrix.arch }}
+          path: output/modules/
+          retention-days: 90
+          if-no-files-found: warn
 
-    - name: Upload build logs
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: build-logs-${{ github.event.inputs.target_arch || 'arm64' }}
-        path: |
-          build.log
-          output/bin-debug.tar.gz
-        retention-days: 7
+      - name: Upload native libraries
+        uses: actions/upload-artifact@v4
+        with:
+          name: lwjgl3-specific-natives-${{ matrix.arch }}
+          path: output/natives/
+          retention-days: 90
+          if-no-files-found: warn
 
-    - name: Upload modules artifact
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: lwjgl-3.3.3-modules-${{ github.event.inputs.target_arch || 'arm64' }}
-        path: |
-          output/modules/
-          output/natives/
-        retention-days: 90
-        if-no-files-found: warn
+      - name: Upload all modules (fallback)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lwjgl3-all-modules-${{ matrix.arch }}
+          path: bin/RELEASE/
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: Create Release
+        if: github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: lwjgl3-3.3.3-${{ matrix.arch }}-${{ github.run_number }}
+          name: LWJGL 3.3.3 Specific Modules (${{ matrix.arch }})
+          body: |
+            ## LWJGL 3.3.3 Android 特定模块编译
+            
+            **目标架构:** ${{ matrix.arch }}
+            **编译时间:** ${{ github.event.head_commit.timestamp }}
+            
+            ### 包含模块
+            - `lwjgl-shaderc` - Shaderc 着色器编译器
+            - `lwjgl-vma` - Vulkan Memory Allocator
+            - `lwjgl-vulkan` - Vulkan 绑定
+            
+            ### 文件说明
+            - `lwjgl3-specific-modules-*.zip` - Java JAR 文件
+            - `lwjgl3-specific-natives-*.zip` - 原生 SO 库
+            
+            **注意:** 如果某些模块不存在，说明该分支默认未启用该模块编译
+          files: |
+            output/modules/*
+            output/natives/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
