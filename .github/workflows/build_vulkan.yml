@@ -1,9 +1,128 @@
-    - name: Build with Ant directly
+name: Build LWJGL 3.3.3 Modules (shaderc, vma, vulkan)
+
+on:
+  push:
+    branches: [ main, master, wip/rebase_3.3.3 ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+    inputs:
+      target_arch:
+        description: 'Target Architecture'
+        required: true
+        default: 'arm64'
+        type: choice
+        options:
+          - arm64
+          - arm32
+          - x64
+          - x86
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  build-modules:
+    runs-on: ubuntu-22.04
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+        fetch-depth: 0
+
+    - name: Set up JDK 8
+      uses: actions/setup-java@v4
+      with:
+        java-version: '8'
+        distribution: 'temurin'
+
+    - name: Install dependencies
       run: |
-        # 只编译 Java 部分（不包括原生库）
-        ant clean
-        ant compile
-        ant jar -Dbuild.type=release
+        sudo apt-get update
+        sudo apt-get install -y ant cmake ninja-build build-essential
+
+    - name: Setup Android NDK
+      id: setup-ndk
+      uses: nttld/setup-ndk@v1
+      with:
+        ndk-version: r25c
+        link-to-sdk: true
+
+    - name: Verify NDK installation
+      run: |
+        echo "NDK Path: ${{ steps.setup-ndk.outputs.ndk-path }}"
+        ls -la ${{ steps.setup-ndk.outputs.ndk-path }} || echo "NDK not found at expected path"
+        echo "ANDROID_NDK_HOME=$ANDROID_NDK_HOME"
+
+    - name: Build LWJGL 3.3.3 Android
+      env:
+        ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+        LWJGL_BUILD_ARCH: ${{ github.event.inputs.target_arch || 'arm64' }}
+        JAVA8_HOME: ${{ env.JAVA_HOME }}
+      run: |
+        echo "========================================"
+        echo "Building LWJGL 3.3.3 for architecture: $LWJGL_BUILD_ARCH"
+        echo "JAVA8_HOME: $JAVA8_HOME"
+        echo "ANDROID_NDK_HOME: $ANDROID_NDK_HOME"
+        java -version
+        echo "========================================"
         
-        # 或者尝试生成特定模块
-        ant -p | grep -i shaderc
+        # 确保脚本可执行
+        chmod +x ci_build_android.bash
+        
+        # 执行编译
+        bash ci_build_android.bash 2>&1 | tee build.log
+        
+        echo "========================================"
+        echo "Build completed, checking output..."
+        ls -la bin/ 2>/dev/null || echo "bin/ directory not found"
+        ls -la bin/RELEASE/ 2>/dev/null || echo "bin/RELEASE/ directory not found"
+
+    - name: Collect specific modules
+      if: always()
+      run: |
+        mkdir -p output/modules output/natives
+        ARCH=${{ github.event.inputs.target_arch || 'arm64' }}
+        
+        # 查找并复制目标模块（如果存在）
+        if [ -d "bin/RELEASE" ]; then
+          find bin/RELEASE -name "lwjgl-shaderc*.jar" -exec cp {} output/modules/ \; 2>/dev/null || true
+          find bin/RELEASE -name "lwjgl-vma*.jar" -exec cp {} output/modules/ \; 2>/dev/null || true
+          find bin/RELEASE -name "lwjgl-vulkan*.jar" -exec cp {} output/modules/ \; 2>/dev/null || true
+          find bin/RELEASE -name "lwjgl*.jar" -exec cp {} output/modules/ \; 2>/dev/null || true
+        fi
+        
+        # 复制原生库（如果存在）
+        if [ -d "bin/out" ]; then
+          find bin/out -type f -exec cp {} output/natives/ \; 2>/dev/null || true
+        fi
+        
+        echo "=== 收集到的文件 ==="
+        ls -la output/modules/ 2>/dev/null || echo "没有模块文件"
+        ls -la output/natives/ 2>/dev/null || echo "没有原生库文件"
+        
+        # 打包整个 bin 目录用于调试
+        tar -czf output/bin-debug.tar.gz bin/ 2>/dev/null || true
+
+    - name: Upload build logs
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-logs-${{ github.event.inputs.target_arch || 'arm64' }}
+        path: |
+          build.log
+          output/bin-debug.tar.gz
+        retention-days: 7
+
+    - name: Upload modules artifact
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: lwjgl-3.3.3-modules-${{ github.event.inputs.target_arch || 'arm64' }}
+        path: |
+          output/modules/
+          output/natives/
+        retention-days: 90
+        if-no-files-found: warn
