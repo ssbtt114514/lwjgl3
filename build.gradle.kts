@@ -291,7 +291,7 @@ enum class Artifacts(
     VULKAN(
         "lwjgl-vulkan", "LWJGL - Vulkan bindings",
         "A new generation graphics and compute API that provides high-efficiency, cross-platform access to modern GPUs used in a wide variety of devices from PCs and consoles to mobile phones and embedded platforms.",
-        Platforms.MACOS, Platforms.MACOS_ARM64
+        *Platforms.ALL  // ← 修改这里：从 Platforms.MACOS, Platforms.MACOS_ARM64 改为 *Platforms.ALL
     ),
     XXHASH(
         "lwjgl-xxhash", "LWJGL - xxHash bindings",
